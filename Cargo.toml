@@ -4,11 +4,3 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-aes-gcm = "0.10"
-base64 = "0.22"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
-serde_json = "1.0"
-ctrlc = "3.4"
-walkdir = "2.5"
-dotenv = "0.15"
-sha2 = "0.10.9"
