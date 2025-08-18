@@ -1,5 +1,3 @@
 pub fn main() {
-    loop {
-        println!("hello from first")
-    }
+    println!("hello from first")
 }
