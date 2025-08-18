@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 pub fn collect_paths(excluded_paths: &[&str]) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut paths = Vec::new();
-    for drive in ['E', 'F', 'G', 'H', 'I', 'J'] {
+    for drive in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "W", "X", "Y", "Z"] {
         let root = format!("{}:\\", drive);
         if Path::new(&root).exists() {
             for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
